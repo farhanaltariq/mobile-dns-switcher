@@ -86,7 +86,7 @@ pub fn HomeScreen() -> Element {
         div { class: "app",
             // Header
             header { class: "header",
-                h1 { "Private DNS" }
+                h1 { "DNS Switcher" }
                 button {
                     class: "btn-icon",
                     title: "Add DNS Provider",

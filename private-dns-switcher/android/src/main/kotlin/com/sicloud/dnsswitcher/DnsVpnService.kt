@@ -126,7 +126,7 @@ class DnsVpnService : VpnService() {
         }
 
         val notif = notificationBuilder
-            .setContentTitle("Private DNS Active")
+            .setContentTitle("DNS Switcher Active")
             .setContentText("Connected to $dnsHost")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)

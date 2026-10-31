@@ -15,13 +15,13 @@ pub fn StatusBanner(status: DnsStatus) -> Element {
     match status.mode {
         DnsMode::Hostname => rsx! {
             div { class: "banner banner--active",
-                div { class: "banner-title", "● Private DNS Active" }
+                div { class: "banner-title", "● DNS Active" }
                 div { class: "banner-host", "{status.hostname}" }
             }
         },
         DnsMode::Off => rsx! {
             div { class: "banner banner--disabled",
-                div { class: "banner-title", "○ Private DNS Off" }
+                div { class: "banner-title", "○ DNS Off" }
                 div { class: "banner-host", "System default DNS is in use" }
             }
         },
