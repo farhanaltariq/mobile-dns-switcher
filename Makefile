@@ -50,17 +50,19 @@ emu-kill: ## Kill running emulator
 
 .PHONY: build-android
 build-android: ## Build Android project via Dioxus CLI
-	rm -f $(APP_DIR)/target/dx/$(APP_DIR)/debug/android/app/app/src/main/res/mipmap-*/ic_launcher.*
-	cd $(APP_DIR) && dx build --platform android
+	$(MAKE) -C $(APP_DIR) build-android
 
 .PHONY: patch-android
 patch-android: ## Patch generated Android project with VPN service, launcher icons, and title
 	$(MAKE) -C $(APP_DIR) patch-android
 
 .PHONY: apk
-apk: build-android patch-android ## Generate Android APK file with app launcher icons & VPN service
-	cd $(APP_DIR)/target/dx/$(APP_DIR)/debug/android/app && ./gradlew --quiet assembleDebug
-	@echo "APK ready: $(APK)"
+apk: ## Generate debug APK
+	$(MAKE) -C $(APP_DIR) apk
+
+.PHONY: apk-release
+apk-release: ## Generate signed, R8-shrunk release APK
+	$(MAKE) -C $(APP_DIR) apk-release
 
 .PHONY: install
 install: ## Install built APK onto connected device/emulator
