@@ -3,11 +3,11 @@ use dioxus::prelude::*;
 
 #[component]
 pub fn StatusBanner(status: DnsStatus) -> Element {
-    if !status.permitted {
+    if status.strict_private_dns {
         return rsx! {
             div { class: "banner banner--denied",
-                div { class: "banner-title", "⚠ Permission Required" }
-                div { class: "banner-host", "WRITE_SECURE_SETTINGS is not granted." }
+                div { class: "banner-title", "⚠ System Private DNS Conflict" }
+                div { class: "banner-host", "Android Settings has Private DNS set to Strict mode. Change it to Automatic or Off for DNS Switcher to route queries." }
             }
         };
     }

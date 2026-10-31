@@ -9,7 +9,7 @@ pub enum DnsMode {
 pub struct DnsStatus {
     pub mode: DnsMode,
     pub hostname: String,
-    pub permitted: bool,
+    pub strict_private_dns: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -30,7 +30,7 @@ mod platform {
             return DnsStatus {
                 mode: DnsMode::Unknown,
                 hostname: String::new(),
-                permitted: true,
+                strict_private_dns: false,
             };
         };
 
@@ -38,7 +38,7 @@ mod platform {
             return DnsStatus {
                 mode: DnsMode::Unknown,
                 hostname: String::new(),
-                permitted: true,
+                strict_private_dns: false,
             };
         };
 
@@ -49,10 +49,18 @@ mod platform {
                 return DnsStatus {
                     mode: DnsMode::Unknown,
                     hostname: String::new(),
-                    permitted: true,
+                    strict_private_dns: false,
                 };
             }
         };
+
+        let strict_private_dns: bool = env
+            .call_static_method(&vpn_helper, "isStrictPrivateDns", "()Z", &[])
+            .map(|v| v.z().unwrap_or(false))
+            .unwrap_or_else(|_| {
+                let _ = env.exception_clear();
+                false
+            });
 
         let is_running: bool = env
             .call_static_method(&vpn_helper, "isRunning", "()Z", &[])
@@ -66,7 +74,7 @@ mod platform {
             return DnsStatus {
                 mode: DnsMode::Off,
                 hostname: String::new(),
-                permitted: true,
+                strict_private_dns,
             };
         }
 
@@ -90,7 +98,7 @@ mod platform {
         DnsStatus {
             mode: DnsMode::Hostname,
             hostname: host,
-            permitted: true,
+            strict_private_dns,
         }
     }
 
@@ -150,7 +158,7 @@ mod platform {
         lock.get_or_insert_with(|| DnsStatus {
             mode: DnsMode::Hostname,
             hostname: "dns.quad9.net".into(),
-            permitted: true,
+            strict_private_dns: false,
         })
         .clone()
     }
@@ -165,7 +173,7 @@ mod platform {
                 *lock = Some(DnsStatus {
                     mode: DnsMode::Hostname,
                     hostname: h.to_string(),
-                    permitted: true,
+                    strict_private_dns: false,
                 });
             }
             None => {
@@ -176,7 +184,7 @@ mod platform {
                 *lock = Some(DnsStatus {
                     mode: DnsMode::Off,
                     hostname: current_host,
-                    permitted: true,
+                    strict_private_dns: false,
                 });
             }
         }

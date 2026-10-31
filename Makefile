@@ -53,9 +53,12 @@ build-android: ## Build Android project via Dioxus CLI
 	rm -f $(APP_DIR)/target/dx/$(APP_DIR)/debug/android/app/app/src/main/res/mipmap-*/ic_launcher.*
 	cd $(APP_DIR) && dx build --platform android
 
+.PHONY: patch-android
+patch-android: ## Patch generated Android project with VPN service, launcher icons, and title
+	$(MAKE) -C $(APP_DIR) patch-android
+
 .PHONY: apk
-apk: build-android ## Generate Android APK file with app launcher icons & VPN service
-	cd $(APP_DIR) && python3 scripts/setup_android.py
+apk: build-android patch-android ## Generate Android APK file with app launcher icons & VPN service
 	cd $(APP_DIR)/target/dx/$(APP_DIR)/debug/android/app && ./gradlew --quiet assembleDebug
 	@echo "APK ready: $(APK)"
 

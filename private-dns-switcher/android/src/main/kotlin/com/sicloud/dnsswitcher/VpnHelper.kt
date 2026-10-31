@@ -48,6 +48,19 @@ object VpnHelper {
     }
 
     @JvmStatic
+    fun isStrictPrivateDns(): Boolean {
+        val ctx = currentActivity ?: return false
+        return try {
+            android.provider.Settings.Global.getString(
+                ctx.contentResolver,
+                "private_dns_mode"
+            ) == "hostname"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @JvmStatic
     fun isRunning(): Boolean {
         return DnsVpnService.isRunning
     }
