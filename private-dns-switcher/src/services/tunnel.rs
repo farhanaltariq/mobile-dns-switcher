@@ -117,29 +117,26 @@ mod android_tunnel {
             return;
         };
 
-        // Create forwarding socket and protect it immediately
-        let Ok(forward_sock) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
             return;
         };
-        let fwd_fd = forward_sock.as_raw_fd();
+
+        // Protect the upstream socket so its traffic bypasses the VPN (prevents loops).
         let protected = env
             .call_method(
                 vpn_service,
                 "protect",
                 "(I)Z",
-                &[jni::objects::JValue::Int(fwd_fd)],
+                &[jni::objects::JValue::Int(socket.as_raw_fd())],
             )
             .map(|v| v.z().unwrap_or(false))
             .unwrap_or(false);
         if !protected {
-            eprintln!("[DNS] protect() FAILED — socket will loop back into VPN");
             let _ = env.exception_clear();
             return;
         }
-        let _ = forward_sock.set_nonblocking(true);
-        eprintln!("[DNS] protect() OK, upstream={}", upstream_addr);
 
-        let _ = forward_sock.set_nonblocking(true);
+        let _ = socket.set_nonblocking(true);
 
         let mut in_flight: HashMap<u16, ([u8; 4], [u8; 4], u16, Instant)> = HashMap::new();
 
@@ -150,34 +147,29 @@ mod android_tunnel {
                 revents: 0,
             },
             libc::pollfd {
-                fd: fwd_fd,
+                fd: socket.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             },
         ];
 
-        let mut tun_buf = [0u8; 65535];
-        let mut fwd_buf = [0u8; 65535];
+        let mut tun_buf = [0u8; 4096];
+        let mut resp_buf = [0u8; 4096];
 
         while RUNNING.load(Ordering::Relaxed) {
             let ret = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, 250) };
             if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
                 break;
             }
 
-            if in_flight.len() > 256 {
-                in_flight.retain(|_, (_, _, _, time)| time.elapsed().as_secs() < 10);
+            if in_flight.len() > 64 {
+                in_flight.retain(|_, (_, _, _, t)| t.elapsed().as_secs() < 5);
             }
 
-            if ret == 0 {
-                continue;
-            }
-
-            // 1. Inbound packet from TUN
+            // 1. DNS query from TUN -> upstream
             if (poll_fds[0].revents & libc::POLLIN) != 0 {
                 let n = unsafe {
                     libc::read(
@@ -187,125 +179,50 @@ mod android_tunnel {
                     )
                 };
                 if n <= 0 {
-                    eprintln!("[DNS] tun read returned {}", n);
                     break;
                 }
                 let n = n as usize;
 
                 if n >= 28 && (tun_buf[0] >> 4) == 4 {
                     let ihl = (tun_buf[0] & 0x0F) as usize * 4;
-                    if ihl >= 20 && n >= ihl + 40 {
-                        let protocol = tun_buf[ihl + 9];
-                        let dst_ip: [u8; 4] = [tun_buf[16], tun_buf[17], tun_buf[18], tun_buf[19]];
-                        let src_ip: [u8; 4] = [tun_buf[12], tun_buf[13], tun_buf[14], tun_buf[15]];
-
-                        if protocol == 17 {
-                            // UDP
-                            let udp_hdr = &tun_buf[ihl..ihl + 8];
+                    if ihl >= 20 && n >= ihl + 8 && tun_buf[9] == 17 {
+                        let udp_hdr = &tun_buf[ihl..ihl + 8];
+                        if u16::from_be_bytes([udp_hdr[2], udp_hdr[3]]) == 53 {
                             let src_port = u16::from_be_bytes([udp_hdr[0], udp_hdr[1]]);
-                            let dst_port = u16::from_be_bytes([udp_hdr[2], udp_hdr[3]]);
-                            let udp_len = u16::from_be_bytes([udp_hdr[4], udp_hdr[5]]) as usize;
-                            let payload_len = udp_len.saturating_sub(8);
-                            let payload_start = ihl + 8;
-
-                            if dst_port == 53 && payload_len >= 12 {
-                                // DNS query — forward to upstream
-                                let dns_query =
-                                    &tun_buf[payload_start..payload_start + payload_len];
+                            let payload_len = (u16::from_be_bytes([udp_hdr[4], udp_hdr[5]])
+                                as usize)
+                                .saturating_sub(8);
+                            if payload_len >= 12 && ihl + 8 + payload_len <= n {
+                                let src_ip: [u8; 4] =
+                                    [tun_buf[12], tun_buf[13], tun_buf[14], tun_buf[15]];
+                                let dst_ip: [u8; 4] =
+                                    [tun_buf[16], tun_buf[17], tun_buf[18], tun_buf[19]];
+                                let dns_query = &tun_buf[ihl + 8..ihl + 8 + payload_len];
                                 let txid = u16::from_be_bytes([dns_query[0], dns_query[1]]);
                                 in_flight.insert(txid, (src_ip, dst_ip, src_port, Instant::now()));
-                                match forward_sock.send_to(dns_query, upstream_addr) {
-                                    Ok(sn) => eprintln!(
-                                        "[DNS] sent {}B to {} txid={:#06x}",
-                                        sn, upstream_addr, txid
-                                    ),
-                                    Err(e) => eprintln!("[DNS] send_to FAILED: {}", e),
-                                }
-                            } else {
-                                // Non-DNS UDP — forward to original destination
-                                let payload = &tun_buf[payload_start..payload_start + payload_len];
-                                let dst_addr = SocketAddr::new(IpAddr::from(dst_ip), dst_port);
-                                match forward_sock.send_to(payload, dst_addr) {
-                                    Ok(sn) => eprintln!("[DNS] fwd {}B UDP -> {}", sn, dst_addr),
-                                    Err(e) => eprintln!("[DNS] fwd FAILED: {}", e),
-                                }
+                                let _ = socket.send_to(dns_query, upstream_addr);
                             }
-                        } else if protocol == 6 {
-                            // TCP — log but drop (would need stream relay for full support)
-                            eprintln!("[DNS] TCP packet dropped (not yet implemented)");
-                        } else {
-                            eprintln!("[DNS] proto={} dropped", protocol);
                         }
                     }
                 }
             }
 
-            // 2. Response from forwarding socket
+            // 2. DNS response from upstream -> TUN
             if (poll_fds[1].revents & libc::POLLIN) != 0 {
-                while let Ok((resp_len, _)) = forward_sock.recv_from(&mut fwd_buf) {
-                    if resp_len < 28 {
+                while let Ok((resp_len, _)) = socket.recv_from(&mut resp_buf) {
+                    if resp_len < 12 {
                         continue;
                     }
-                    if (fwd_buf[0] >> 4) != 4 {
-                        continue;
-                    }
-                    let fh = (fwd_buf[0] & 0x0F) as usize * 4;
-                    if fh < 20 || resp_len < fh + 8 {
-                        continue;
-                    }
-                    let resp_proto = fwd_buf[fh + 9];
-                    if resp_proto != 17 {
-                        continue;
-                    }
-                    let resp_src_port = u16::from_be_bytes([fwd_buf[fh + 0], fwd_buf[fh + 1]]);
-                    let resp_dst_port = u16::from_be_bytes([fwd_buf[fh + 2], fwd_buf[fh + 3]]);
-                    let resp_payload_len = (u16::from_be_bytes([fwd_buf[fh + 4], fwd_buf[fh + 5]])
-                        as usize)
-                        .saturating_sub(8);
-
-                    if resp_dst_port == 53 && resp_payload_len >= 12 {
-                        // DNS response
-                        let txid = u16::from_be_bytes([fwd_buf[fh + 8], fwd_buf[fh + 9]]);
-                        if let Some((client_ip, _virtual_dns_ip, client_port, _)) =
-                            in_flight.remove(&txid)
-                        {
-                            eprintln!(
-                                "[DNS] recv {}B txid={:#06x} -> {}.{}.{}.{}:{}",
-                                resp_len,
-                                txid,
-                                client_ip[0],
-                                client_ip[1],
-                                client_ip[2],
-                                client_ip[3],
-                                client_port
-                            );
-                            let reply = build_ipv4_udp_packet(
-                                [10, 111, 222, 2], // virtual DNS IP
-                                client_ip,
-                                53,
-                                client_port,
-                                &fwd_buf[fh + 8..fh + 8 + resp_payload_len],
-                            );
-                            let _ = unsafe {
-                                libc::write(
-                                    tun_fd,
-                                    reply.as_ptr() as *const libc::c_void,
-                                    reply.len(),
-                                )
-                            };
-                        }
-                    } else {
-                        // Non-DNS UDP response — write back to TUN
-                        let resp_src_ip: [u8; 4] =
-                            [fwd_buf[12], fwd_buf[13], fwd_buf[14], fwd_buf[15]];
-                        let resp_dst_ip: [u8; 4] =
-                            [fwd_buf[16], fwd_buf[17], fwd_buf[18], fwd_buf[19]];
+                    let txid = u16::from_be_bytes([resp_buf[0], resp_buf[1]]);
+                    if let Some((client_ip, virtual_dns_ip, client_port, _)) =
+                        in_flight.remove(&txid)
+                    {
                         let reply = build_ipv4_udp_packet(
-                            resp_src_ip,
-                            resp_dst_ip,
-                            resp_src_port,
-                            resp_dst_port,
-                            &fwd_buf[fh + 8..fh + 8 + resp_payload_len],
+                            virtual_dns_ip,
+                            client_ip,
+                            53,
+                            client_port,
+                            &resp_buf[..resp_len],
                         );
                         let _ = unsafe {
                             libc::write(tun_fd, reply.as_ptr() as *const libc::c_void, reply.len())

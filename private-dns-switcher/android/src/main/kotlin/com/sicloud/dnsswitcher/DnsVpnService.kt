@@ -60,7 +60,7 @@ class DnsVpnService : VpnService() {
             .setMtu(1500)
             .addAddress("10.111.222.1", 30)
             .addDnsServer("10.111.222.2")
-            .addRoute("0.0.0.0", 0)  // route all traffic through VPN; tunnel only intercepts UDP/53
+            .addRoute("10.111.222.2", 32)  // split routing: only DNS traffic goes through the tunnel
             .setBlocking(true)
             .establish() ?: run {
                 stopTunnel()
