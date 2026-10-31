@@ -1,14 +1,14 @@
 # Private DNS Switcher
 
-Pure Rust Android mobile app built with [Dioxus 0.7](https://dioxuslabs.com/) to manage and switch Android Private DNS (`Settings.Global: private_dns_mode`, `private_dns_specifier`) with built-in latency benchmarking.
+Pure Rust + Dioxus 0.7 Android mobile app to switch and benchmark DNS providers with zero root and zero ADB permissions. Ready to use immediately upon installation.
 
 ## Features
 
+- **Ready to Use Out-of-the-Box**: Uses Android's native `VpnService` DNS tunnel. No ADB commands, no developer options, and no root needed.
 - **DNS Management**: Add, edit, delete, and select custom DNS-over-TLS (DoT) providers (pre-seeded with Quad9, Google, Cloudflare).
-- **One-Touch Toggle**: Turn Private DNS on/off instantly via Android secure settings.
 - **Latency Testing**: Real-world TCP handshake latency test over DoT port 853 for each provider.
 - **Find Best ("⚡ Test All")**: Sequentially tests all configured DNS providers and auto-selects the fastest reachable server.
-- **Pure Rust**: 100% Rust logic via JNI calls (`android.provider.Settings.Global`) with no Kotlin/Java boilerplate.
+- **Zero Traffic Overhead**: Only DNS queries (port 53) route through the local tunnel; all web, streaming, and app traffic flows directly at full speed.
 
 ## Prerequisites
 
@@ -17,20 +17,10 @@ Pure Rust Android mobile app built with [Dioxus 0.7](https://dioxuslabs.com/) to
 - **Android SDK & NDK** (`platform-tools`, `emulator`, NDK 28+)
 - **Java 17+** (`TEMURIN_17` or standard JDK 17)
 
-## One-Time Permission Setup
-
-Android restricts writing secure global settings to system apps or ADB-granted apps:
-
-```bash
-adb shell pm grant com.sicloud.dnsswitcher android.permission.WRITE_SECURE_SETTINGS
-# or run:
-make grant-permission
-```
-
 ## Quick Start
 
 ```bash
-# Build APK, install, grant permission, and launch on connected device/emulator
+# Build APK, install, and launch on connected device/emulator
 make run
 
 # Build APK only

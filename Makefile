@@ -54,8 +54,8 @@ build-android: ## Build Android project via Dioxus CLI
 	cd $(APP_DIR) && dx build --platform android
 
 .PHONY: apk
-apk: build-android ## Generate Android APK file with app launcher icons
-	cd $(APP_DIR) && python3 scripts/gen_icon.py --android
+apk: build-android ## Generate Android APK file with app launcher icons & VPN service
+	cd $(APP_DIR) && python3 scripts/setup_android.py
 	cd $(APP_DIR)/target/dx/$(APP_DIR)/debug/android/app && ./gradlew --quiet assembleDebug
 	@echo "APK ready: $(APK)"
 
@@ -63,17 +63,12 @@ apk: build-android ## Generate Android APK file with app launcher icons
 install: ## Install built APK onto connected device/emulator
 	adb install -r $(APK)
 
-.PHONY: grant-permission
-grant-permission: ## Grant WRITE_SECURE_SETTINGS via ADB
-	adb shell pm grant $(PKG) android.permission.WRITE_SECURE_SETTINGS
-	@echo "Granted WRITE_SECURE_SETTINGS to $(PKG)"
-
 .PHONY: launch
 launch: ## Launch the app on connected device/emulator
 	adb shell am start -n $(PKG)/dev.dioxus.main.MainActivity
 
 .PHONY: run
-run: apk install grant-permission launch ## Build, install, grant permission, and launch on device
+run: apk install launch ## Build, install, and launch on device (no ADB permissions needed!)
 
 .PHONY: logs
 logs: ## Stream app logs from device

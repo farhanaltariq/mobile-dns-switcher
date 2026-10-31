@@ -32,7 +32,6 @@ pub fn HomeScreen() -> Element {
     let mut error_msg = use_signal(|| None::<String>);
 
     let current_status = status.read().clone();
-    let is_permitted = current_status.permitted;
 
     let selected_entry = entries
         .read()
@@ -103,16 +102,7 @@ pub fn HomeScreen() -> Element {
             // Current Status Banner
             StatusBanner { status: current_status }
 
-            // Permission Warning Card if WRITE_SECURE_SETTINGS not granted
-            if !is_permitted {
-                div { class: "permission-box",
-                    strong { "Setup Command Required" }
-                    span { "Run this via ADB on your computer to grant permission:" }
-                    code { class: "permission-cmd",
-                        "adb shell pm grant com.sicloud.dnsswitcher android.permission.WRITE_SECURE_SETTINGS"
-                    }
-                }
-            }
+
 
             // DNS Providers List Section Header
             div { class: "section-header",

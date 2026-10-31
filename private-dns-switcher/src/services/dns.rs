@@ -16,90 +16,21 @@ pub struct DnsStatus {
 mod platform {
     use super::*;
     use jni::objects::JString;
-    use jni::JNIEnv;
 
-    fn get_app<'a>(env: &mut JNIEnv<'a>) -> Result<jni::objects::JObject<'a>, String> {
-        let act_thread = env.find_class("android/app/ActivityThread").map_err(|e| {
-            let _ = env.exception_clear();
-            e.to_string()
-        })?;
-        let app = env
-            .call_static_method(
-                act_thread,
-                "currentApplication",
-                "()Landroid/app/Application;",
-                &[],
-            )
-            .map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?
-            .l()
-            .map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?;
-        Ok(app)
-    }
-
-    fn get_resolver<'a>(
-        env: &mut JNIEnv<'a>,
-        app: &jni::objects::JObject<'a>,
-    ) -> Result<jni::objects::JObject<'a>, String> {
-        env.call_method(
-            app,
-            "getContentResolver",
-            "()Landroid/content/ContentResolver;",
-            &[],
-        )
-        .map_err(|e| {
-            let _ = env.exception_clear();
-            e.to_string()
-        })?
-        .l()
-        .map_err(|e| {
-            let _ = env.exception_clear();
-            e.to_string()
-        })
-    }
-
-    fn check_permission(env: &mut JNIEnv, app: &jni::objects::JObject) -> bool {
-        let Ok(perm) = env.new_string("android.permission.WRITE_SECURE_SETTINGS") else {
-            let _ = env.exception_clear();
-            return false;
-        };
-        let res = env.call_method(
-            app,
-            "checkSelfPermission",
-            "(Ljava/lang/String;)I",
-            &[(&perm).into()],
-        );
-        match res {
-            Ok(val) => val.i().unwrap_or(-1) == 0,
-            Err(_) => {
-                let _ = env.exception_clear();
-                false
-            }
+    fn get_vm() -> Result<jni::JavaVM, String> {
+        let vm = ndk_context::android_context().vm();
+        if vm.is_null() {
+            return Err("null VM".to_string());
         }
+        unsafe { jni::JavaVM::from_raw(vm.cast()) }.map_err(|e| e.to_string())
     }
 
     pub fn get_status() -> DnsStatus {
-        let vm = match ndk_context::android_context().vm() {
-            vm if !vm.is_null() => unsafe { jni::JavaVM::from_raw(vm.cast()) },
-            _ => {
-                return DnsStatus {
-                    mode: DnsMode::Unknown,
-                    hostname: String::new(),
-                    permitted: false,
-                }
-            }
-        };
-
-        let Ok(vm) = vm else {
+        let Ok(vm) = get_vm() else {
             return DnsStatus {
                 mode: DnsMode::Unknown,
                 hostname: String::new(),
-                permitted: false,
+                permitted: true,
             };
         };
 
@@ -107,158 +38,100 @@ mod platform {
             return DnsStatus {
                 mode: DnsMode::Unknown,
                 hostname: String::new(),
-                permitted: false,
+                permitted: true,
             };
         };
 
-        let app = match get_app(&mut env) {
-            Ok(a) => a,
-            Err(_) => {
-                return DnsStatus {
-                    mode: DnsMode::Unknown,
-                    hostname: String::new(),
-                    permitted: false,
-                }
-            }
-        };
-
-        let permitted = check_permission(&mut env, &app);
-
-        let resolver = match get_resolver(&mut env, &app) {
-            Ok(r) => r,
-            Err(_) => {
-                return DnsStatus {
-                    mode: DnsMode::Unknown,
-                    hostname: String::new(),
-                    permitted,
-                }
-            }
-        };
-
-        let settings = match env.find_class("android/provider/Settings$Global") {
-            Ok(s) => s,
+        let vpn_helper = match env.find_class("com/sicloud/dnsswitcher/VpnHelper") {
+            Ok(c) => c,
             Err(_) => {
                 let _ = env.exception_clear();
                 return DnsStatus {
                     mode: DnsMode::Unknown,
                     hostname: String::new(),
-                    permitted,
+                    permitted: true,
                 };
             }
         };
 
-        let get_string = |env: &mut JNIEnv, key: &str| -> Result<String, String> {
-            let jkey = env.new_string(key).map_err(|e| {
+        let is_running: bool = env
+            .call_static_method(&vpn_helper, "isRunning", "()Z", &[])
+            .map(|v| v.z().unwrap_or(false))
+            .unwrap_or_else(|_| {
                 let _ = env.exception_clear();
-                e.to_string()
-            })?;
-            let res = env
-                .call_static_method(
-                    &settings,
-                    "getString",
-                    "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;",
-                    &[(&resolver).into(), (&jkey).into()],
-                )
-                .map_err(|e| {
-                    let _ = env.exception_clear();
-                    e.to_string()
-                })?
-                .l()
-                .map_err(|e| {
-                    let _ = env.exception_clear();
-                    e.to_string()
-                })?;
+                false
+            });
 
-            if res.is_null() {
-                return Ok(String::new());
-            }
-            let jstr = JString::from(res);
-            env.get_string(&jstr)
-                .map(|s| s.to_string_lossy().into_owned())
-                .map_err(|e| {
-                    let _ = env.exception_clear();
-                    e.to_string()
-                })
-        };
+        if !is_running {
+            return DnsStatus {
+                mode: DnsMode::Off,
+                hostname: String::new(),
+                permitted: true,
+            };
+        }
 
-        let mode_str = match get_string(&mut env, "private_dns_mode") {
-            Ok(m) => m,
-            Err(_) => {
-                return DnsStatus {
-                    mode: DnsMode::Unknown,
-                    hostname: String::new(),
-                    permitted,
+        let host = env
+            .call_static_method(&vpn_helper, "getActiveDns", "()Ljava/lang/String;", &[])
+            .and_then(|v| v.l())
+            .map_err(|e| {
+                let _ = env.exception_clear();
+                e
+            })
+            .and_then(|obj| {
+                if obj.is_null() {
+                    Ok(String::new())
+                } else {
+                    let jstr = JString::from(obj);
+                    env.get_string(&jstr)
+                        .map(|s| s.to_string_lossy().into_owned())
                 }
-            }
-        };
-
-        let host = get_string(&mut env, "private_dns_specifier")
-            .or_else(|_| get_string(&mut env, "private_dns_hostname"))
+            })
             .unwrap_or_default();
 
-        let mode = match mode_str.as_str() {
-            "hostname" => DnsMode::Hostname,
-            "off" => DnsMode::Off,
-            _ => DnsMode::Unknown,
-        };
-
         DnsStatus {
-            mode,
+            mode: DnsMode::Hostname,
             hostname: host,
-            permitted,
+            permitted: true,
         }
     }
 
     pub fn set_private_dns(hostname: Option<&str>) -> Result<(), String> {
-        let vm = match ndk_context::android_context().vm() {
-            vm if !vm.is_null() => unsafe { jni::JavaVM::from_raw(vm.cast()) },
-            _ => return Err("Failed to obtain JavaVM".into()),
-        };
-        let vm = vm.map_err(|e| e.to_string())?;
+        let vm = get_vm()?;
         let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
 
-        let app = get_app(&mut env)?;
-        if !check_permission(&mut env, &app) {
-            return Err("WRITE_SECURE_SETTINGS not granted. Run ADB grant command.".into());
+        let vpn_helper = env
+            .find_class("com/sicloud/dnsswitcher/VpnHelper")
+            .map_err(|e| {
+                let _ = env.exception_clear();
+                format!("find VpnHelper: {e}")
+            })?;
+
+        match hostname {
+            Some(host) => {
+                let jhost = env.new_string(host).map_err(|e| {
+                    let _ = env.exception_clear();
+                    e.to_string()
+                })?;
+                env.call_static_method(
+                    &vpn_helper,
+                    "startVpn",
+                    "(Ljava/lang/String;)Z",
+                    &[(&jhost).into()],
+                )
+                .map_err(|e| {
+                    let _ = env.exception_clear();
+                    format!("startVpn: {e}")
+                })?;
+            }
+            None => {
+                env.call_static_method(&vpn_helper, "stopVpn", "()Z", &[])
+                    .map_err(|e| {
+                        let _ = env.exception_clear();
+                        format!("stopVpn: {e}")
+                    })?;
+            }
         }
 
-        let resolver = get_resolver(&mut env, &app)?;
-        let settings = env
-            .find_class("android/provider/Settings$Global")
-            .map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?;
-
-        let (mode, host) = match hostname {
-            Some(h) => ("hostname", h),
-            None => ("off", ""),
-        };
-
-        let put_string = |env: &mut JNIEnv, key: &str, val: &str| -> Result<(), String> {
-            let jkey = env.new_string(key).map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?;
-            let jval = env.new_string(val).map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?;
-            env.call_static_method(
-                &settings,
-                "putString",
-                "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z",
-                &[(&resolver).into(), (&jkey).into(), (&jval).into()],
-            )
-            .map_err(|e| {
-                let _ = env.exception_clear();
-                e.to_string()
-            })?;
-            Ok(())
-        };
-
-        put_string(&mut env, "private_dns_mode", mode)?;
-        put_string(&mut env, "private_dns_specifier", host)?;
         Ok(())
     }
 }
