@@ -1,0 +1,18 @@
+[application]
+name = "private-dns-switcher"
+default_platform = "desktop"
+out_dir = "dist"
+asset_dir = "assets"
+
+[android]
+package = "com.sicloud.dnsswitcher"
+label = "DNS Switcher"
+min_sdk_version = 28
+target_sdk_version = 35
+[android.raw]
+manifest = '<uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />'
+
+[bundle]
+identifier = "com.sicloud.dnsswitcher"
+publisher = "SICloud"
+icon = ["assets/icons/icon.png"]

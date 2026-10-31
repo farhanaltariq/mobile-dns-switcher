@@ -30,34 +30,35 @@ private-dns-switcher/
 │
 ├── src/
 │   ├── main.rs              # entry: dioxus::launch(App)
-│   ├── app.rs               # root component, router (single route for now)
+│   ├── app.rs               # root component, router outlet
 │   ├── routes.rs            # route enum (Home only; extensible later)
 │   │
 │   ├── screens/
 │   │   ├── mod.rs
-│   │   └── home.rs          # THE screen: input + toggle + status
+│   │   └── home.rs          # THE screen: DNS list + enable/disable + add/edit dialog
 │   │
 │   ├── components/
 │   │   ├── mod.rs
-│   │   └── status_banner.rs # permission-denied warning / success toast
+│   │   ├── status_banner.rs # enabled/disabled/permission-denied indicator
+│   │   └── dns_entry_row.rs # one row: name, hostname, radio dot, edit/delete buttons
 │   │
 │   ├── services/
 │   │   ├── mod.rs
-│   │   └── dns.rs           # JNI: read/write PRIVATE_DNS_MODE & HOSTNAME
+│   │   ├── dns.rs           # JNI: read/write Settings.Global (PRIVATE_DNS_MODE/HOSTNAME)
+│   │   └── dns_store.rs     # CRUD for user's DNS list (local JSON file persistence)
 │   │
 │   ├── models/
 │   │   ├── mod.rs
-│   │   └── dns_state.rs     # struct DnsState { mode, hostname, enabled }
+│   │   └── dns_entry.rs     # struct DnsEntry { id, name, hostname }
 │   │
 │   ├── state/
-│   │   ├── mod.rs
-│   │   └── app_state.rs     # global signal: current DnsState + permission flag
+│   │   └── mod.rs           # AppState signal: entries, active_id, permitted
 │   │
 │   └── utils/
-│       └── mod.rs           # empty for now; validation helpers if needed
+│       └── mod.rs           # empty for now; hostname validation if needed
 │
 └── scripts/
-    └── gen_icon.sh          # one-liner to resize icon via ImageMagick (optional)
+    └── gen_icon.py          # copy from fuseflow
 ```
 
 ## Mapping to fuseflow
@@ -65,10 +66,10 @@ private-dns-switcher/
 | fuseflow dir | Purpose | Our use |
 |---|---|---|
 | `screens/` | One file per routable screen | `home.rs` (only screen) |
-| `components/` | Reusable UI widgets | `status_banner.rs` |
-| `services/` | Business logic / platform calls | `dns.rs` (JNI bridge) |
-| `models/` | Data structs | `dns_state.rs` |
-| `state/` | Global app state | `app_state.rs` |
+| `components/` | Reusable UI widgets | `status_banner.rs`, `dns_entry_row.rs` |
+| `services/` | Business logic / platform calls | `dns.rs` (JNI), `dns_store.rs` (CRUD + persistence) |
+| `models/` | Data structs | `dns_entry.rs` |
+| `state/` | Global app state | `mod.rs` (entries + active + permission) |
 | `utils/` | Shared helpers | Empty initially |
 | `assets/styles/` | CSS for WebView | `main.css` |
 | `assets/icons/` | App icon | `icon.png` |
@@ -78,7 +79,7 @@ private-dns-switcher/
 - No `i18n.rs` — single language, no locale switching needed.
 - No `routes.rs` with multiple variants — one route. File exists but has one variant.
 - No empty `utils/` files with placeholder functions — `mod.rs` only.
-- No `scripts/gen_icon.py` — a `convert` one-liner in a shell script suffices.
+- No separate `edit_dialog.rs` component — the dialog is 15 lines of RSX inline in `home.rs`. Extract only if it grows.
 
 ## Config files (mirror fuseflow)
 

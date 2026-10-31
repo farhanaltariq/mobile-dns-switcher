@@ -16,7 +16,15 @@ egui on Android works but requires winit + OpenGL context management and is less
 
 ## What the app does
 
-One screen. A text field for a DNS hostname, a toggle (on/off), and a save button. Sets `Settings.Global.PRIVATE_DNS_HOSTNAME` and `Settings.Global.PRIVATE_DNS_MODE` (`off` | `hostname`).
+One screen with a **user-manageable list of DNS entries**. Each entry has a friendly name + hostname. The user can:
+
+- **Add** a new DNS entry (name + hostname)
+- **Edit** an existing entry
+- **Delete** an entry
+- **Select** an entry and **Enable** private DNS (sets `Settings.Global.PRIVATE_DNS_MODE=hostname` + `PRIVATE_DNS_HOSTNAME=<hostname>`)
+- **Disable** private DNS (sets mode to `off`)
+
+Entries persist locally as a JSON file. Three defaults are seeded on first launch (Quad9, Google, Cloudflare).
 
 ## Permissions reality
 
@@ -39,17 +47,23 @@ The app targets the ADB-grant path. On first launch, detect whether the permissi
 | Min Android | API 28 (Android 9, where Private DNS was introduced) |
 
 ## File layout
+## File layout
+
+Follows the fuseflow project structure (see `PLAN-structure.md` for details):
 
 ```
-private-dns-switcher/
-  Dioxus.toml          # dx project config (app name, bundle id, platform)
-  Cargo.toml
-  src/
-    main.rs            # Dioxus app entry, RSX UI (input + toggle + button)
-    dns.rs             # JNI calls: read/write PRIVATE_DNS_MODE & PRIVATE_DNS_HOSTNAME
+src/
+  main.rs
+  app.rs
+  routes.rs
+  screens/home.rs          # single screen: list + toggle
+  components/status_banner.rs
+  components/dns_entry_row.rs
+  services/dns.rs          # JNI: read/write Settings.Global
+  services/dns_store.rs    # CRUD + JSON persistence
+  models/dns_entry.rs      # struct DnsEntry
+  state/mod.rs             # AppState signal
 ```
-
-Two source files. That's it.
 
 ## Implementation sketch
 
@@ -75,35 +89,32 @@ pub fn get_private_dns(env: &mut JNIEnv) -> Result<(String, String), String> {
 }
 ```
 
-### `main.rs` — Dioxus UI (~60 lines)
+### `main.rs` / `screens/home.rs` — Dioxus UI (~100 lines)
 
 ```rust
-use dioxus::prelude::*;
-
-fn main() {
-    dioxus::launch(App);
-}
-
 #[component]
-fn App() -> Element {
-    let hostname = use_signal(|| "dns.quad9.net".to_string());
-    let enabled = use_signal(|| true);
+fn HomeScreen() -> Element {
+    let entries = use_signal(|| dns_store::load());
+    let active_id = use_signal(|| None::<u64>);
+    let dialog = use_signal(|| None::<DnsEntry>);
 
     rsx! {
-        div { style: "padding: 24px; font-family: sans-serif;",
-            h2 { "Private DNS" }
-            input {
-                value: "{hostname}",
-                oninput: move |e| hostname.set(e.value()),
-                placeholder: "e.g. dns.quad9.net",
-            }
-            button {
-                onclick: move |_| {
-                    // call dns::set_private_dns via JNI
-                },
-                if enabled() { "Disable" } else { "Enable" }
+        StatusBanner { .. }
+        div { class: "dns-list",
+            for entry in entries() {
+                DnsEntryRow {
+                    entry: entry.clone(),
+                    active: active_id() == Some(entry.id),
+                    on_select: move |_| { /* set active, call dns::set */ },
+                    on_edit: move |_| dialog.set(Some(entry.clone())),
+                    on_delete: move |_| { entries.write().retain(|e| e.id != entry.id); dns_store::save(&entries()); },
+                }
             }
         }
+        button { onclick: move |_| dialog.set(Some(DnsEntry::default())), "+" }
+        if let Some(e) = dialog() { EditDialog { entry: e, on_save: move |e| { /* upsert */ } } }
+        EnableButton { .. }
+        DisableButton { .. }
     }
 }
 ```
@@ -120,20 +131,26 @@ fn App() -> Element {
 - Read-back to show current value
 - Verify: `adb shell settings get global private_dns_hostname`
 
-### M2 — Wire UI → JNI (30 min)
-- Button press calls `dns::set_private_dns`
-- On app start, call `dns::get_private_dns` to restore state into signals
+### M2 — DNS list CRUD (1 h)
+- `models/dns_entry.rs`: `DnsEntry { id, name, hostname }`
+- `services/dns_store.rs`: load/save JSON to app-internal storage; seed 3 defaults
+- `screens/home.rs`: render list, add/edit dialog, delete button
+- Wire select → `dns::set_private_dns`
 
-### M3 — Permission guard (20 min)
+### M3 — Wire UI → JNI (30 min)
+- Enable/Disable buttons call `dns::set_private_dns`
+- On app start, call `dns::get_private_dns` to restore active state
+
+### M4 — Permission guard (20 min)
 - Try a harmless `Settings.Global.getString`; catch `SecurityException`
 - If denied, show the `adb shell pm grant …` command as selectable text + "Retry" button
 
-### M4 — Ship (10 min)
+### M5 — Ship (10 min)
 - App icon, label in `Dioxus.toml`
 - `dx build --platform android --release` → signed APK
 - README with one-time ADB setup
 
-Total estimate: **~2–3 hours**.
+Total estimate: **~3–4 hours**.
 
 ## Key Cargo.toml deps
 
@@ -146,8 +163,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-dioxus = { version = "0.6", features = ["mobile"] }
+dioxus = { version = "0.7", features = ["router"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 jni = "0.21"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
 ```
 
 ## Build & install
@@ -168,6 +191,6 @@ adb shell pm grant com.example.dnsswitcher android.permission.WRITE_SECURE_SETTI
 
 ## What we skipped (and when to add)
 
-- **DNS-over-HTTPS provider list/presets** — add when users ask; it's just a hardcoded array feeding the text field.
+- **Import/export DNS list** — add when users ask; it's just `serde_json::to_string` / `from_str` on the same `Vec<DnsEntry>`.
 - **Quick-settings tile** — requires a `TileService` subclass via JNI; add only if toggle-from-notification is requested.
 - **Root fallback path** — add a `su -c settings put …` branch in `dns.rs` if we want to support rooted devices without ADB.
