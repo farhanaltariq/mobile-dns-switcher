@@ -1,15 +1,15 @@
 # Folder Structure — Private DNS Switcher
 
-## Why follow fuseflow's format
+## Architecture Principles
 
-Consistency across the workspace. `rust-mobile/fuseflow` already establishes the Dioxus project conventions for this team:
+Standard feature-oriented architecture for Rust + Dioxus mobile applications:
 
-- Same `Dioxus.toml` layout (application, android, bundle sections)
-- Same `src/` subdirectory pattern (screens, components, services, models, state, utils)
-- Same `assets/` split (icons, styles)
-- Same tooling files (`clippy.toml`, `rustfmt.toml`)
+- Standard `Dioxus.toml` layout (application, android, bundle sections)
+- Modular `src/` subdirectory pattern (screens, components, services, models, state, utils)
+- Clean `assets/` split (icons, styles)
+- Standard tooling files (`clippy.toml`, `rustfmt.toml`)
 
-A developer who knows fuseflow can open this project and immediately know where everything is. No new conventions to learn. The structure scales: if we later add a presets screen or a tile service, the directories already exist as the natural home.
+The structure scales cleanly: if we later add a presets screen or a quick settings tile, the directories already exist as the natural home.
 
 ## Structure (scaled to actual needs)
 
@@ -19,8 +19,8 @@ private-dns-switcher/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── Dioxus.toml              # app name, bundle id, android config
-├── clippy.toml              # lint config (same rules as fuseflow)
-├── rustfmt.toml             # formatting (same rules as fuseflow)
+├── clippy.toml              # lint config
+├── rustfmt.toml             # formatting config
 │
 ├── assets/
 │   ├── icons/
@@ -58,12 +58,12 @@ private-dns-switcher/
 │       └── mod.rs           # empty for now; hostname validation if needed
 │
 └── scripts/
-    └── gen_icon.py          # copy from fuseflow
+    └── gen_icon.py          # icon asset generator
 ```
 
-## Mapping to fuseflow
+## Directory Responsibilities
 
-| fuseflow dir | Purpose | Our use |
+| Directory | Purpose | Our use |
 |---|---|---|
 | `screens/` | One file per routable screen | `home.rs` (only screen) |
 | `components/` | Reusable UI widgets | `status_banner.rs`, `dns_entry_row.rs` |
@@ -81,7 +81,7 @@ private-dns-switcher/
 - No empty `utils/` files with placeholder functions — `mod.rs` only.
 - No separate `edit_dialog.rs` component — the dialog is 15 lines of RSX inline in `home.rs`. Extract only if it grows.
 
-## Config files (mirror fuseflow)
+## Config files
 
 **`Dioxus.toml`**
 ```toml
@@ -103,5 +103,5 @@ publisher = "SICloud"
 icon = ["assets/icons/icon.png"]
 ```
 
-**`clippy.toml`** — copy from fuseflow.
-**`rustfmt.toml`** — copy from fuseflow.
+**`clippy.toml`** — standard linter settings.
+**`rustfmt.toml`** — standard formatting rules.

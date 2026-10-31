@@ -36,7 +36,7 @@ cargo test --manifest-path private-dns-switcher/Cargo.toml
 
 ## Project Structure
 
-Follows the `fuseflow` feature-oriented pattern:
+Standard feature-oriented architecture:
 
 ```text
 private-dns-switcher/

@@ -47,9 +47,8 @@ The app targets the ADB-grant path. On first launch, detect whether the permissi
 | Min Android | API 28 (Android 9, where Private DNS was introduced) |
 
 ## File layout
-## File layout
 
-Follows the fuseflow project structure (see `PLAN-structure.md` for details):
+Standard feature-oriented mobile architecture (see `PLAN-structure.md` for details):
 
 ```
 src/
