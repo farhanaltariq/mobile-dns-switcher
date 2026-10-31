@@ -59,3 +59,7 @@ private-dns-switcher/
     ├── routes.rs    # Dioxus Router configuration
     └── main.rs      # App entry point
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Farhan Altariq
