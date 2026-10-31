@@ -44,7 +44,7 @@ pub fn HomeScreen() -> Element {
         if let Some(entry) = entries.read().iter().find(|e| e.id == id).cloned() {
             pings.write().insert(id, PingStatus::Testing);
             spawn(async move {
-                let res = match ping::ping_dot(&entry.hostname) {
+                let res = match ping::ping_dot_async(entry.hostname.clone()).await {
                     Some(ms) => PingStatus::Latency(ms),
                     None => PingStatus::Timeout,
                 };
@@ -64,7 +64,7 @@ pub fn HomeScreen() -> Element {
             let mut best: Option<(u64, u128)> = None;
             for entry in list {
                 pings.write().insert(entry.id, PingStatus::Testing);
-                let res = match ping::ping_dot(&entry.hostname) {
+                let res = match ping::ping_dot_async(entry.hostname.clone()).await {
                     Some(ms) => {
                         if best.is_none_or(|(_, min_ms)| ms < min_ms) {
                             best = Some((entry.id, ms));
