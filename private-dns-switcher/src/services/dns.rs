@@ -73,9 +73,8 @@ mod platform {
         let host = env
             .call_static_method(&vpn_helper, "getActiveDns", "()Ljava/lang/String;", &[])
             .and_then(|v| v.l())
-            .map_err(|e| {
+            .inspect_err(|_| {
                 let _ = env.exception_clear();
-                e
             })
             .and_then(|obj| {
                 if obj.is_null() {

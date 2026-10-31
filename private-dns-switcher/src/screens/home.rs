@@ -66,7 +66,7 @@ pub fn HomeScreen() -> Element {
                 pings.write().insert(entry.id, PingStatus::Testing);
                 let res = match ping::ping_dot(&entry.hostname) {
                     Some(ms) => {
-                        if best.map_or(true, |(_, min_ms)| ms < min_ms) {
+                        if best.is_none_or(|(_, min_ms)| ms < min_ms) {
                             best = Some((entry.id, ms));
                         }
                         PingStatus::Latency(ms)
