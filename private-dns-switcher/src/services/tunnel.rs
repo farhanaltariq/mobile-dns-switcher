@@ -1,4 +1,5 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 /// Compute RFC 791 IPv4 header checksum (16-bit one's complement sum).
 #[must_use]
@@ -91,13 +92,41 @@ pub fn resolve_dns_host(host: &str) -> Option<SocketAddr> {
     (host, 53).to_socket_addrs().ok()?.next()
 }
 
+/// Forward a raw DNS query to `upstream` over TCP (RFC 7766) and return the raw response.
+///
+/// Many ISPs transparently hijack UDP/53 answers (DNS poisoning), but leave TCP/53 alone.
+/// Using TCP gives uncensored answers without needing TLS.
+/// ponytail: unencrypted TCP/53. Upgrade to DoT (853) / DoH (443) if an ISP starts
+/// hijacking TCP/53 as well; that requires a TLS stack (rustls).
+#[must_use]
+pub fn dns_over_tcp(upstream: SocketAddr, query: &[u8], timeout: Duration) -> Option<Vec<u8>> {
+    use std::io::{Read, Write};
+
+    if query.len() > u16::MAX as usize {
+        return None;
+    }
+
+    let mut sock = TcpStream::connect_timeout(&upstream, timeout).ok()?;
+    sock.set_read_timeout(Some(timeout)).ok()?;
+    sock.set_write_timeout(Some(timeout)).ok()?;
+
+    // RFC 7766: 2-byte big-endian length prefix, then the DNS message.
+    let mut framed = Vec::with_capacity(query.len() + 2);
+    framed.extend_from_slice(&(query.len() as u16).to_be_bytes());
+    framed.extend_from_slice(query);
+    sock.write_all(&framed).ok()?;
+
+    let mut len_buf = [0u8; 2];
+    sock.read_exact(&mut len_buf).ok()?;
+    let mut resp = vec![0u8; u16::from_be_bytes(len_buf) as usize];
+    sock.read_exact(&mut resp).ok()?;
+    Some(resp)
+}
+
 #[cfg(target_os = "android")]
 mod android_tunnel {
     use super::*;
-    use std::collections::HashMap;
-    use std::os::fd::AsRawFd;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Instant;
 
     static RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -105,135 +134,80 @@ mod android_tunnel {
         RUNNING.store(false, Ordering::SeqCst);
     }
 
-    pub fn run_tunnel(
-        env: &mut jni::JNIEnv,
-        vpn_service: &jni::objects::JObject,
-        tun_fd: i32,
-        dns_host: &str,
-    ) {
+    pub fn run_tunnel(tun_fd: i32, dns_host: &str) {
         RUNNING.store(true, Ordering::SeqCst);
 
-        let Some(upstream_addr) = resolve_dns_host(dns_host) else {
+        let Some(upstream) = resolve_dns_host(dns_host) else {
             return;
         };
 
-        let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
-            return;
-        };
-
-        // Protect the upstream socket so its traffic bypasses the VPN (prevents loops).
-        let protected = env
-            .call_method(
-                vpn_service,
-                "protect",
-                "(I)Z",
-                &[jni::objects::JValue::Int(socket.as_raw_fd())],
-            )
-            .map(|v| v.z().unwrap_or(false))
-            .unwrap_or(false);
-        if !protected {
-            let _ = env.exception_clear();
-            return;
-        }
-
-        let _ = socket.set_nonblocking(true);
-
-        let mut in_flight: HashMap<u16, ([u8; 4], [u8; 4], u16, Instant)> = HashMap::new();
-
-        let mut poll_fds = [
-            libc::pollfd {
-                fd: tun_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-
+        // Only DNS (10.111.222.2/32) is routed into this tunnel, so upstream TCP
+        // traffic egresses the default network directly — no protect() needed.
+        let mut poll_fds = [libc::pollfd {
+            fd: tun_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
         let mut tun_buf = [0u8; 4096];
-        let mut resp_buf = [0u8; 4096];
 
         while RUNNING.load(Ordering::Relaxed) {
-            let ret = unsafe { libc::poll(poll_fds.as_mut_ptr(), 2, 250) };
+            let ret = unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, 250) };
             if ret < 0 {
                 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                     continue;
                 }
                 break;
             }
-
-            if in_flight.len() > 64 {
-                in_flight.retain(|_, (_, _, _, t)| t.elapsed().as_secs() < 5);
-            }
-
-            // 1. DNS query from TUN -> upstream
-            if (poll_fds[0].revents & libc::POLLIN) != 0 {
-                let n = unsafe {
-                    libc::read(
-                        tun_fd,
-                        tun_buf.as_mut_ptr() as *mut libc::c_void,
-                        tun_buf.len(),
-                    )
-                };
-                if n <= 0 {
+            if ret == 0 || (poll_fds[0].revents & libc::POLLIN) == 0 {
+                if (poll_fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
                     break;
                 }
-                let n = n as usize;
-
-                if n >= 28 && (tun_buf[0] >> 4) == 4 {
-                    let ihl = (tun_buf[0] & 0x0F) as usize * 4;
-                    if ihl >= 20 && n >= ihl + 8 && tun_buf[9] == 17 {
-                        let udp_hdr = &tun_buf[ihl..ihl + 8];
-                        if u16::from_be_bytes([udp_hdr[2], udp_hdr[3]]) == 53 {
-                            let src_port = u16::from_be_bytes([udp_hdr[0], udp_hdr[1]]);
-                            let payload_len = (u16::from_be_bytes([udp_hdr[4], udp_hdr[5]])
-                                as usize)
-                                .saturating_sub(8);
-                            if payload_len >= 12 && ihl + 8 + payload_len <= n {
-                                let src_ip: [u8; 4] =
-                                    [tun_buf[12], tun_buf[13], tun_buf[14], tun_buf[15]];
-                                let dst_ip: [u8; 4] =
-                                    [tun_buf[16], tun_buf[17], tun_buf[18], tun_buf[19]];
-                                let dns_query = &tun_buf[ihl + 8..ihl + 8 + payload_len];
-                                let txid = u16::from_be_bytes([dns_query[0], dns_query[1]]);
-                                in_flight.insert(txid, (src_ip, dst_ip, src_port, Instant::now()));
-                                let _ = socket.send_to(dns_query, upstream_addr);
-                            }
-                        }
-                    }
-                }
+                continue;
             }
 
-            // 2. DNS response from upstream -> TUN
-            if (poll_fds[1].revents & libc::POLLIN) != 0 {
-                while let Ok((resp_len, _)) = socket.recv_from(&mut resp_buf) {
-                    if resp_len < 12 {
-                        continue;
-                    }
-                    let txid = u16::from_be_bytes([resp_buf[0], resp_buf[1]]);
-                    if let Some((client_ip, virtual_dns_ip, client_port, _)) =
-                        in_flight.remove(&txid)
-                    {
-                        let reply = build_ipv4_udp_packet(
-                            virtual_dns_ip,
-                            client_ip,
-                            53,
-                            client_port,
-                            &resp_buf[..resp_len],
-                        );
-                        let _ = unsafe {
-                            libc::write(tun_fd, reply.as_ptr() as *const libc::c_void, reply.len())
-                        };
-                    }
-                }
-            }
-
-            if (poll_fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            let n = unsafe {
+                libc::read(
+                    tun_fd,
+                    tun_buf.as_mut_ptr() as *mut libc::c_void,
+                    tun_buf.len(),
+                )
+            };
+            if n <= 0 {
                 break;
             }
+            let n = n as usize;
+
+            if !(n >= 28 && (tun_buf[0] >> 4) == 4) {
+                continue;
+            }
+            let ihl = (tun_buf[0] & 0x0F) as usize * 4;
+            if !(ihl >= 20 && n >= ihl + 8 && tun_buf[9] == 17) {
+                continue;
+            }
+            let udp = &tun_buf[ihl..ihl + 8];
+            if u16::from_be_bytes([udp[2], udp[3]]) != 53 {
+                continue;
+            }
+            let client_port = u16::from_be_bytes([udp[0], udp[1]]);
+            let payload_len = (u16::from_be_bytes([udp[4], udp[5]]) as usize).saturating_sub(8);
+            if payload_len < 12 || ihl + 8 + payload_len > n {
+                continue;
+            }
+
+            let client_ip = [tun_buf[12], tun_buf[13], tun_buf[14], tun_buf[15]];
+            let virtual_dns_ip = [tun_buf[16], tun_buf[17], tun_buf[18], tun_buf[19]];
+            let query = tun_buf[ihl + 8..ihl + 8 + payload_len].to_vec();
+
+            // Resolve on a worker thread so slow upstreams never stall the tunnel loop.
+            std::thread::spawn(move || {
+                if let Some(resp) = dns_over_tcp(upstream, &query, Duration::from_secs(5)) {
+                    let reply =
+                        build_ipv4_udp_packet(virtual_dns_ip, client_ip, 53, client_port, &resp);
+                    let _ = unsafe {
+                        libc::write(tun_fd, reply.as_ptr() as *const libc::c_void, reply.len())
+                    };
+                }
+            });
         }
     }
 }
@@ -254,7 +228,7 @@ pub unsafe extern "system" fn Java_com_sicloud_dnsswitcher_DnsVpnService_nativeR
     let Ok(mut env) = jni::JNIEnv::from_raw(env) else {
         return;
     };
-    let this_obj = jni::objects::JObject::from_raw(this);
+    let _ = this;
     let host_jstr = jni::objects::JString::from_raw(dns_host);
 
     let Ok(host) = env
@@ -264,7 +238,7 @@ pub unsafe extern "system" fn Java_com_sicloud_dnsswitcher_DnsVpnService_nativeR
         let _ = env.exception_clear();
         return;
     };
-    android_tunnel::run_tunnel(&mut env, &this_obj, tun_fd, &host);
+    android_tunnel::run_tunnel(tun_fd, &host);
 }
 
 /// JNI entry point to request the running tunnel loop to exit.
@@ -327,5 +301,37 @@ mod tests {
             resolve_dns_host("1dot1dot1dot1.cloudflare-dns.com"),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53))
         );
+    }
+
+    #[test]
+    fn test_dns_over_tcp_roundtrip() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let Ok(listener) = TcpListener::bind("127.0.0.1:0") else {
+            return;
+        };
+        let Ok(addr) = listener.local_addr() else {
+            return;
+        };
+
+        // Fake DNS server: read the length-prefixed query, reply with a fixed message.
+        let server = std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut len = [0u8; 2];
+                if conn.read_exact(&mut len).is_ok() {
+                    let mut q = vec![0u8; u16::from_be_bytes(len) as usize];
+                    if conn.read_exact(&mut q).is_ok() {
+                        let reply = b"\xaa\xbb\x01\x00";
+                        let _ = conn.write_all(&(reply.len() as u16).to_be_bytes());
+                        let _ = conn.write_all(reply);
+                    }
+                }
+            }
+        });
+
+        let resp = dns_over_tcp(addr, b"\x12\x34\x01\x00\x00\x01", Duration::from_secs(2));
+        assert_eq!(resp.as_deref(), Some(&b"\xaa\xbb\x01\x00"[..]));
+        let _ = server.join();
     }
 }

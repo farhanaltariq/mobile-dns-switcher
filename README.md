@@ -5,8 +5,9 @@ Pure Rust + Dioxus 0.7 Android mobile app to switch and benchmark DNS providers 
 ## Features
 
 - **Ready to Use Out-of-the-Box**: Uses Android's native `VpnService` split DNS tunnel. No ADB commands, no developer options, and no root needed. (Ensure system Private DNS in Android Settings is set to "Automatic" or "Off").
-- **DNS Management**: Add, edit, delete, and select custom DNS-over-TLS (DoT) providers (pre-seeded with Quad9, Google, Cloudflare).
-- **Latency Testing**: Real-world TCP handshake latency test over DoT port 853 for each provider.
+- **DNS Management**: Add, edit, delete, and select custom DNS providers (pre-seeded with Quad9, Google, Cloudflare, AdGuard).
+- **Censorship-Resistant**: Forwards queries over TCP/53 (RFC 7766), which bypasses ISP UDP/53 DNS hijacking/poisoning.
+- **Latency Testing**: TCP handshake latency test (port 853) for each provider.
 - **Find Best ("⚡ Test All")**: Sequentially tests all configured DNS providers and auto-selects the fastest reachable server.
 - **Zero Traffic Overhead**: Only DNS queries (port 53) route through the local tunnel; all web, streaming, and app traffic flows directly at full speed.
 
