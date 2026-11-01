@@ -3,6 +3,7 @@ package com.sicloud.dnsswitcher
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
@@ -36,7 +37,16 @@ class DnsVpnService : VpnService() {
     private external fun nativeStopTunnel()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val prefs = getSharedPreferences("dns_vpn_prefs", Context.MODE_PRIVATE)
+        if (intent == null) {
+            val savedDns = prefs.getString("last_dns", null)
+            if (savedDns != null) {
+                startTunnel(savedDns)
+                return START_STICKY
+            }
+            return START_NOT_STICKY
+        }
+        when (intent.action) {
             ACTION_STOP -> stopTunnel()
             ACTION_START -> {
                 val dns = intent.getStringExtra(EXTRA_DNS) ?: "dns.quad9.net"
@@ -47,12 +57,20 @@ class DnsVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Keep VPN tunnel running even if user swipes away UI from Recents
+    }
+
     private fun startTunnel(dnsHost: String) {
         if (isRunning && activeDns == dnsHost) return
         closeCurrentTunnel()
 
         activeDns = dnsHost
         isRunning = true
+        getSharedPreferences("dns_vpn_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_dns", dnsHost)
+            .apply()
         startNotification(dnsHost)
 
         val pfd = Builder()
@@ -116,6 +134,10 @@ class DnsVpnService : VpnService() {
         closeCurrentTunnel()
         isRunning = false
         activeDns = null
+        getSharedPreferences("dns_vpn_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .remove("last_dns")
+            .apply()
         stopForeground(true)
         stopSelf()
     }
